@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# TODO : maintain list of control messages to send in Tunnel. All sends/receives on tunnel should happen in monitor_thread only!
+# TODO : .close() should close just the client end of the socketpair in Channel. Tunnel/client should detect when the socket has been closed in each
 import argparse
 import enum
 import logging
@@ -12,40 +14,8 @@ import sys
 import threading
 
 
-def proxy_sockets(s1, s2):
-    while True:
-        rlist = [s1, s2]
-        r, _, _ = select.select(rlist, [], [], 1)
-        if not r:
-            continue
-        if s1 in r:
-            s2.write(s1.read(4096))
-        elif s2 in r:
-            s1.write(s2.read(4096))
-
-
-def recv_all(sock, length):
-    """
-    Receive all of a specified number of bytes from a socket
-    :param socket.socket sock: The socket to receive data from
-    :param int length: The number of bytes of data to receive
-    :raises ValueError: When the number of bytes is not received before reading EOF
-    :return: The desired number of bytes
-    :rtype: bytes
-    """
-    data = b''
-    while len(data) < length:
-        _data = sock.recv(length - len(data))
-        if not _data:
-            break
-        data += _data
-    if len(data) < length:
-        raise ValueError('Received less data than desired before receiving EOF')
-    return data
-
-
-def counter(start=1):
-    for i in range(start, 0xffffffff):
+def counter(start=1, end=0xffffffff):
+    for i in range(start, end):
         yield i
 
 
@@ -57,24 +27,57 @@ class MessageType(enum.Enum):
 
 
 class Message(object):
+    """
+    This is a container class for messages sent across the tunnel
+
+    A message consists of:
+      +-+--+----+=====...======+
+      |T|Id|Size| message body |
+      +-+--+----+=====...======+
+      T    - The message type (see class MessageType)
+      Id   - The Channel ID (value 0-65535)
+      Size - The number of bytes in the Message body
+      body - The Message body, variable bytes
+
+    Note that it is important that a single thread should be in charge of reading/writing Messages, or you'll run
+    into situations where Messages are interleaved!
+    """
     HDR_STRUCT = b'!BHI'
     HDR_SIZE = struct.calcsize(HDR_STRUCT)
 
-    def __init__(self, data, channel_id, msg_type=MessageType.Data):
-        self.data = data  # type: bytes
-        self._channel_id = channel_id  # type: int
-        self.msg_type = msg_type  # type: MessageType
+    def __init__(self, body, channel_id, msg_type=MessageType.Data):
+        """
+        :param bytes body:
+        :param int channel_id:
+        :param MessageType msg_type:
+        """
+        self.body = body
+        self._channel_id = channel_id
+        self.msg_type = msg_type
         self.logger = logging.getLogger('message')
 
     def __repr__(self):
-        return '<Message type={} channel={} len={}>'.format(self.msg_type.name, self.channel_id, len(self.data))
+        return '<Message type={} channel={} len={}>'.format(self.msg_type.name, self.channel_id, len(self.body))
 
     @property
     def channel_id(self):
+        """
+        Public accessor for Channel ID associated with a message
+        :return: The Message's channel ID
+        :rtype: int
+        """
         return self._channel_id
 
     @classmethod
     def parse_hdr(cls, data):
+        """
+        Parse a Message header into the primary tuple of elements
+        :param data: The data containing a Message header
+        :return: A tuple of elements constituting the Message header
+        :rtype: (MessageType, int, int)
+        :raises TypeError: When parsing a header that contains an unknown MessageType
+        :raises struct.error: If passed too few bytes to parse a full Message header
+        """
         msg_type, channel_id, length = struct.unpack(cls.HDR_STRUCT, data[:struct.calcsize(cls.HDR_STRUCT)])
         try:
             msg_type = MessageType(msg_type)
@@ -84,23 +87,49 @@ class Message(object):
 
     @classmethod
     def parse(cls, data):
-        msg_type, channel_id, length = struct.unpack(cls.HDR_STRUCT, data[:struct.calcsize(cls.HDR_STRUCT)])
-        data = data[struct.calcsize(cls.HDR_STRUCT):]
+        """
+        Create a Message from a blob of data, which should contain a full header an body
+        :param bytes data: The data to parse
+        :return: An unserialized Message object
+        :rtype: Message
+        :raises ValueError: When an invalid message is parsed, if header parsing fails or Message body is bad length
+        """
+        if len(data) < cls.HDR_SIZE:
+            raise ValueError('Invalid message, received incomplete header')
+        msg_type, channel_id, length = cls.parse_hdr(data[:cls.HDR_SIZE])
+        data = data[cls.HDR_SIZE:]
         if length != len(data):
-            raise ValueError('Parsing a message with an invalid length, received {} bytes, expected {}'.format(
-                len(data), length))
+            raise ValueError('Invalid message, received {} bytes and expected {}'.format(len(data), length))
         try:
             msg_type = MessageType(msg_type)
         except ValueError:
-            raise ValueError('Parsing a message with an invalid message type: 0x{:02x}'.format(msg_type))
+            raise ValueError('Invalid message type: 0x{:02x}'.format(msg_type))
         return Message(data, channel_id, msg_type=MessageType(msg_type))
 
     def serialize(self):
-        return struct.pack(self.HDR_STRUCT, self.msg_type.value, self.channel_id, len(self.data)) + self.data
+        """
+        Serializes a Message object into a stream of bytes
+        :return: A Message formatted as a stream of bytes
+        :rtype: bytes
+        """
+        return struct.pack(self.HDR_STRUCT, self.msg_type.value, self.channel_id, len(self.body)) + self.body
 
 
 class Channel(object):
+    """
+    A Channel object is an iterface between a Tunnel and client software. It is implemented as a pair of connected
+    Unix domain sockets; the Tunnel reads/writes from/to one end, and the client software reads/writes from/to the
+    other end.
+
+    All methods below should be used by client software, except for tunnel_interface, which is intended for use
+    by the Tunnel to which the Channel belongs.
+    """
     def __init__(self, channel_id):
+        """
+        :param int channel_id: The Channel ID of this channel
+        :type self._client_end: socket.socket
+        :type self._tunnel_end: socket.socket
+        """
         self._channel_id = channel_id
         self._client_end, self._tunnel_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.logger = logging.getLogger('channel')
@@ -111,20 +140,9 @@ class Channel(object):
         return '<Channel id={} bytes_tx={} bytes_rx={}>'.format(self.channel_id, self.tx, self.rx)
 
     @property
-    def channel_id(self):
-        return self._channel_id
-
-    def fileno(self):
-        return self._client_end.fileno()
-
-    def close(self):
-        self._tunnel_end.close()
-        self._client_end.close()
-
-    @property
     def tunnel_interface(self):
         """
-        You can assume this supports the socket.socket stream interface
+        You can assume this supports the socket.socket stream interface. DO NOT USE THIS IN A CLIENT APPLICATION!
         :return: something for the tunnel to interact with
         :rtype: socket.socket
         """
@@ -134,20 +152,59 @@ class Channel(object):
     def client_interface(self):
         """
         You can assume this supports the socket.socket stream interface
-        :return: something for the tunnel to interact with
+        :return: something for client software to interface with
         :rtype: socket.socket
         """
+        # TODO : deprecate this
         return self._client_end
 
+    @property
+    def channel_id(self):
+        """
+        :return: The ID of this channel
+        :rtype: int
+        """
+        return self._channel_id
+
+    def fileno(self):
+        """
+        Needed for calls to select.select from client software
+        :return:
+        """
+        return self._client_end.fileno()
+
+    def close(self):
+        """
+        Closes the Channel
+        """
+        # TODO : close Channel._client_end. Tunnel should use Channel.tunnel_interface.close
+        self._tunnel_end.close()
+        self._client_end.close()
+
     def send(self, data, flags=0):
+        """
+        Send data associated with this Channel across the Tunnel
+        :param bytes data: Data to send
+        :param int flags: Flags that are passed through to the underlying socket
+        :raises BrokenPipeError: If the socket is no longer connected
+        """
+        # TODO : allow BrokenPipeError to pass through
         try:
             self.client_interface.sendall(data, flags)
-        except Exception as e:
+        except BrokenPipeError as e:
             self.logger.debug('Error sending through channel: {}'.format(e))
         else:
             self.tx += len(data)
 
     def recv(self, length):
+        """
+        Receive data associated with this Channel from the associated tunnel.
+        :param int length: The number of bytes to receive
+        :return: Data from the tunnel
+        :rtype: bytes
+        :raises EOFError: When the remote endpoint is closed
+        """
+        # TODO : check for 0 bytes received and raise EOFError
         try:
             data = self.client_interface.recv(length)
         except Exception as e:
@@ -161,19 +218,19 @@ class Channel(object):
 class Tunnel(object):
     def __init__(self, sock, open_channel_callback=None, close_channel_callback=None):
         """
-
-        :param sock:
-        :param open_channel_callback:
-        :param close_channel_callback:
+        :param socket.socket sock: Connected socket to use for transport
+        :param callable open_channel_callback: A function to call when remote end opens a channel
+        :param callable close_channel_callback: A function to call when remote end closes a channel
         :type self.channels: list[(Channel, int)]
         :type self.transport: socket.socket
         """
         self.logger = logging.getLogger('tunnel')
-        self.channels = []
         self.transport = sock
         self.transport_lock = threading.Lock()
+        self.channels = []
         self.closed_channels = {}
 
+        # Set up callbacks for remotely opened/closed Channels
         if open_channel_callback is None:
             self.open_channel_callback = lambda x: None
         else:
@@ -184,12 +241,13 @@ class Tunnel(object):
         else:
             self.close_channel_callback = close_channel_callback  # type: callable
 
-        self.monitor_thread = threading.Thread(target=self._monitor, daemon=True)
-        self.monitor_thread.start()
-
+        # CTRL-C ends Tunnel, CTRL-\ prints Tunnel stats
         signal.signal(signal.SIGINT, self.sigint_handler)
         signal.signal(signal.SIGQUIT, self.sigquit_handler)
 
+        # Monitors Tunnel activity
+        self.monitor_thread = threading.Thread(target=self._monitor, daemon=True)
+        self.monitor_thread.start()
 
     def __repr__(self):
         msg = '<Tunnel OpenChannels={} ClosedChannels={} BytesTX={} BytesRX={}>'
@@ -201,7 +259,7 @@ class Tunnel(object):
         )
 
     def sigquit_handler(self, signum, frame):
-        self.logger.debug('Caught SIGQUIT (if you want to exit, use CTRL-C!!')
+        self.logger.debug('Caught SIGQUIT (if you want to exit, use CTRL-C!!)')
         print(self)
         return
 
@@ -210,24 +268,49 @@ class Tunnel(object):
         sys.exit(0)
 
     def wait(self):
+        """
+        Useful for client software that has nothing to do but handle callbacks from remote Channel opens
+        :return:
+        """
         self.monitor_thread.join()
 
     @property
     def channel_id_map(self):
+        """
+        :return: A mapping of open channels to their channel ID's
+        :rtype: dict[Channel: int]
+        """
         return {x: y for x, y in self.channels}
 
     @property
     def id_channel_map(self):
+        """
+        :return: A mapping of open channel ID's to their Channels
+        :rtype: dict[int: Channel]
+        """
         return {y: x for x, y in self.channels}
 
     def _close_channel_remote(self, channel_id):
+        """
+        Sends a command across the Tunnel to close a given Channel
+        :param int channel_id: The ID of the channel to close
+        :rtype: None
+        """
+        # TODO : append message to a list of control messages to send
         message = Message(b'', channel_id, msg_type=MessageType.CloseChannel)
-        self.logger.debug('Sending request to close remote channel: {}'.format(channel_id))
+        self.logger.debug('Sending request to close remote channel: {}'.format(message))
         self.transport_lock.acquire()
         self.transport.sendall(message.serialize())
         self.transport_lock.release()
 
     def close_channel(self, channel_id, close_remote=False, exc=False):
+        """
+        Closes a Channel associated with this Tunnel
+        :param int channel_id: The ID of the Channel to close
+        :param bool close_remote: Whether to also close the Channel on the remote end
+        :param bool exc: Whether to raise an Exception if the Channel could not be closed
+        :return:
+        """
         if channel_id in self.closed_channels:
             if close_remote:
                 self._close_channel_remote(channel_id)
@@ -252,19 +335,35 @@ class Tunnel(object):
         self.logger.debug('Closed a channel: {}'.format(channel))
 
     def close_tunnel(self):
+        """
+        Shuts down the entire Tunnel, by first closing all Channels locally/remotely then exiting with status=0
+        """
         self.logger.info('Closing Tunnel: {}'.format(self))
         for channel, channel_id in self.channels:
             self.close_channel(channel_id, close_remote=True)
         self.transport.close()
 
     def _open_channel_remote(self, channel_id):
+        """
+        Sends a Message to the remote endpoint to open a new Channel
+        :param int channel_id: The ID of the Channel to open remotely
+        """
+        # TODO : append the message to a list of control messages to send
         message = Message(b'', channel_id, MessageType.OpenChannel)
-        self.logger.debug('Sending request to open remote channel: {}'.format(channel_id))
+        self.logger.debug('Sending request to open remote channel: {}'.format(message))
         self.transport_lock.acquire()
         self.transport.sendall(message.serialize())
         self.transport_lock.release()
 
     def open_channel(self, channel_id, open_remote=False, exc=False):
+        """
+        Opens a Channel associated with this tunnel locally
+        :param channel_id: The ID of the Channel to open
+        :param open_remote: Whether to open the Channel on the remote endpoint as well
+        :param exc: Whether to raise an exception if the Channel could not be opened
+        :return: The newly opened Channel associated with this tunnel
+        :rtype: Channel
+        """
         if channel_id in self.id_channel_map:
             self.logger.warn('Attempted to open an already open channel : {}'.format(self.id_channel_map[channel_id]))
             if exc:
@@ -281,12 +380,12 @@ class Tunnel(object):
 
     def recv_message(self):
         """
-        Receives an entire message from the tunnel transport socket
         :raises ValueError: When we fail to receive a complete Message header or body
         :return: A complete message received across the tunnel
         :rtype: Message
         """
-        data = b''  # leave this, it's a small enough chunk the number of reallocations will be small
+        # Receive a full Message header
+        data = b''
         while len(data) < Message.HDR_SIZE:
             _data = self.transport.recv(Message.HDR_SIZE - len(data))
             if not _data:
@@ -296,7 +395,8 @@ class Tunnel(object):
             raise ValueError('Error encountered while receiving Message header')
         msg_type, channel_id, length = Message.parse_hdr(data)
 
-        chunks = []
+        # Block until we've received the full Message body
+        chunks = []  # This is an optimization to avoid reallocating strings while we receive large Message bodies
         received = 0
         while received < length:
             _data = self.transport.recv(length - received)
@@ -309,6 +409,10 @@ class Tunnel(object):
         return Message(b''.join(chunks), channel_id, msg_type)
 
     def _monitor(self):
+        """
+        The main thread target that monitors the Tunnel
+        :return:
+        """
         while True:
             ignored_channels = []  # channels that were closed in this iteration
 
@@ -349,7 +453,7 @@ class Tunnel(object):
                         self.logger.debug('Received a message for an unknown channel, closing remote')
                         self.close_channel(message.channel_id, close_remote=True)
                     else:
-                        channel.tunnel_interface.sendall(message.data)
+                        channel.tunnel_interface.sendall(message.body)
                 # Not implemented channel type
                 else:
                     self.logger.warn('Non-implemented MessageType received: {}'.format(message.msg_type))
@@ -463,18 +567,23 @@ class Tunnel(object):
 class Server(object):
     def __init__(self, tunnel_port, socks_port, certfile=None, keyfile=None):
         """
-
-        :param int tunnel_port:
-        :param int socks_port:
+        If an SSL certificate or key is not provided, the Server will fallback to using an unencrypted Tunnel.
+        :param int tunnel_port: The port to listen for Relays on
+        :param int socks_port: The port to listen for SOCKS clients to connect on
+        :param str certfile: An SSL certificate file (required for SSL connections)
+        :param str keyfile: An SSL key file (required for SSL connections)
         :type self.tunnel: Tunnel
         """
         self.logger = logging.getLogger('server')
+
+        # Create the tunnel server
         self.tunnel_port = tunnel_port
         self.tunnel_server = socket.socket()
         self.tunnel_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.tunnel_server.bind(('', tunnel_port))
         self.tunnel_server.listen(1)
 
+        # Create the SOCKS server
         self.socks_port = socks_port
         self.socks_server = socket.socket()
         self.socks_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -491,28 +600,21 @@ class Server(object):
             keyfile = os.path.abspath(keyfile)
         if keyfile is None or certfile is None:
             self.logger.warn('A Certificate and/or Key was not given. Proceeding without SSL!')
-        elif not os.path.isfile(certfile) or not os.path.isfile(keyfile):
-            self.logger.error('Error locating SSL cert or key, bailing')
-            sys.exit(-1)
         else:
             try:
                 self.tunnel_server = ssl.wrap_socket(self.tunnel_server,
                                                      server_side=True,
                                                      certfile=certfile,
                                                      keyfile=keyfile)
-            except Exception as e:
-                self.logger.error('Error setting up SSL: {}'.format(e))
+            except ssl.SSLError as e:
+                self.logger.error('Error setting up SSL, bailing: {}'.format(e))
                 sys.exit(-1)
-
-        self.logger.debug('Server initialized')
 
     def _handle_channel(self, sock):
         """
-        Create a channel in the Tunnel to accomodate new SOCKS client, and proxy data to/from the SOCKS client
+        Create a channel in the Tunnel to accommodate new SOCKS client, and proxy data to/from the SOCKS client
         through the tunnel.
         :param socket.socket sock: A newly connect SOCKS client
-        :return: nothing
-        :rtype: None
         """
         host, port = sock.getpeername()[:2]
         try:
@@ -526,6 +628,10 @@ class Server(object):
         self.logger.info('Terminating thread that handled {} <--> {}:{}'.format(channel, host, port))
 
     def run(self):
+        """
+        Waits for Relay to connect, then handles SOCKS clients as they connect. A thread is spawned to handle each
+        SOCKS client.
+        """
         self.logger.info('Listening for relay connections on {}:{}'.format('0.0.0.0', self.tunnel_port))
         client, addr = self.tunnel_server.accept()
         self.logger.info('Accepted relay client connection from: {}:{}'.format(*addr))
@@ -628,30 +734,34 @@ class Socks5Proxy(object):
 class Relay(object):
     def __init__(self, connect_host, connect_port, no_ssl=False):
         """
-
-        :param str connect_host:
-        :param int connect_port:
+        :param str connect_host: The Server host to connect to
+        :param int connect_port: The Server port to connect to
+        :param bool no_ssl: Flag to control whether to SSL-wrap the Tunnel transport
         :type self.tunnel: Tunnel
         """
         self.logger = logging.getLogger('relay')
         self.no_ssl = no_ssl
         self.connect_server = (connect_host, connect_port)
-        self.tunnel_sock = socket.socket()
         self.tunnel = None
+        self.tunnel_sock = socket.socket()
         if not no_ssl:
             self.logger.info('SSL-wrapping client socket')
-            self.tunnel_sock = ssl.wrap_socket(self.tunnel_sock)  # TODO : add certificate validation
+            try:
+                self.tunnel_sock = ssl.wrap_socket(self.tunnel_sock)
+            except ssl.SSLError as e:
+                self.logger.critical('Problem SSL-wrapping socket, bailing!: {}'.format(e))
+                sys.exit(-1)
         else:
-            self.logger.warn('The proxy transport will not be encrypted with SSL!!')
-        self.logger.debug('Completed initialization')
+            self.logger.warning('The proxy transport will not be encrypted!!')
 
     def _handle_channel(self, channel):
         """
         Handle initial SOCKS protocol, and proxy data between remote endpoint and tunnel
-        :param tunnel.Channel channel:
-        :rtype: None
+        :param tunnel.Channel channel: The Channel to proxy data with
+        :type sock: socket.socket
         """
         sock = None
+
         # Handle SOCKS setup protocol
         try:
             sock, addr = Socks5Proxy.new_connect(channel.client_interface)
@@ -675,33 +785,45 @@ class Relay(object):
 
     def open_channel_callback(self, channel):
         """
-        Channel was opened remotely. Start a new thread to handle SOCKS protocol and proxying data between
-        remote host and tunnel.
-        :param channel:
-        :rtype: None
+        Channel was opened remotely. Start a new thread to handle SOCKS protocol and proxy data between remote host and
+        tunnel.
+        :param Channel channel: The Channel opened by the Server
         """
         self.logger.debug('Spawning a thread to handle {}'.format(channel))
         t = threading.Thread(target=self._handle_channel, args=(channel,), daemon=True)
         t.start()
 
     def run(self):
+        """
+        Connect to the Server and wait on the Tunnel. All functionality from here will be started from the remote
+        Channel open callback function.
+        """
         try:
             self.tunnel_sock.connect(self.connect_server)
         except Exception as e:
             self.logger.critical('Error connecting to server, bailing! [{}]'.format(e))
             return
+
         self.logger.info('Connected to server at {}:{}'.format(*self.tunnel_sock.getpeername()[:2]))
         self.tunnel = Tunnel(self.tunnel_sock, open_channel_callback=self.open_channel_callback)
         self.tunnel.wait()
 
 
 def server_main(args):
+    """
+    Target function for Server functionality
+    """
     server = Server(args.tunnel_port, args.socks_port, args.cert, args.key)
     server.run()
     return
 
 
 def relay_main(args):
+    """
+    Target functionality for Relay mode.
+
+    The connect-back string can also be piped into the script via stdin when the script is run.
+    """
     if args.connect is None:
         logging.debug('Connect string not provided on command-line, checking stdin...')
         r, _, _ = select.select([sys.stdin], [], [], 0)
@@ -725,12 +847,12 @@ def relay_main(args):
 def main():
     # Main parser
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--debug', default=False, action='store_true', help='Enable debug mode')
-    parser.add_argument('-v', '--verbose', default=False, action='store_true', help='Enable verbose mode')
     subparsers = parser.add_subparsers(help='Specify `server` mode or `relay` mode')
 
     # Server parser
     server_parser = subparsers.add_parser('server', description='Options for running in Server mode')
+    server_parser.add_argument('-d', '--debug', default=False, action='store_true', help='Enable debug mode')
+    server_parser.add_argument('-v', '--verbose', default=False, action='store_true', help='Enable verbose mode')
     server_parser.add_argument('-s', '--socks-port', type=int, default=1080,
                                help='The port to bind for the SOCKS server')
     server_parser.add_argument('-t', '--tunnel-port', type=int, default=4433,
@@ -741,6 +863,8 @@ def main():
 
     # Relay parser
     relay_parser = subparsers.add_parser('relay', description='Options for running in Relay mode')
+    relay_parser.add_argument('-d', '--debug', default=False, action='store_true', help='Enable debug mode')
+    relay_parser.add_argument('-v', '--verbose', default=False, action='store_true', help='Enable verbose mode')
     relay_parser.add_argument('--connect', default=None, help='The socksychains server to connect to (i.e. host:port). '
                                                               'Alternatively, this can be piped in at runtime.')
     relay_parser.add_argument('--no-ssl', dest='no_ssl', default=False, action='store_true',
