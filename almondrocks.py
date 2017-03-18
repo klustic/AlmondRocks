@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# TODO : maintain list of control messages to send in Tunnel. All sends/receives on tunnel should happen in monitor_thread only!
 # TODO : .close() should close just the client end of the socketpair in Channel. Tunnel/client should detect when the socket has been closed in each
 import argparse
 import enum
@@ -296,7 +295,6 @@ class Tunnel(object):
         :param int channel_id: The ID of the channel to close
         :rtype: None
         """
-        # TODO : append message to a list of control messages to send
         message = Message(b'', channel_id, msg_type=MessageType.CloseChannel)
         self.logger.debug('Sending request to close remote channel: {}'.format(message))
         self.transport_lock.acquire()
@@ -348,7 +346,6 @@ class Tunnel(object):
         Sends a Message to the remote endpoint to open a new Channel
         :param int channel_id: The ID of the Channel to open remotely
         """
-        # TODO : append the message to a list of control messages to send
         message = Message(b'', channel_id, MessageType.OpenChannel)
         self.logger.debug('Sending request to open remote channel: {}'.format(message))
         self.transport_lock.acquire()
@@ -758,7 +755,6 @@ class Relay(object):
         """
         Handle initial SOCKS protocol, and proxy data between remote endpoint and tunnel
         :param tunnel.Channel channel: The Channel to proxy data with
-        :type sock: socket.socket
         """
         sock = None
 
