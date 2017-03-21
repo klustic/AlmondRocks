@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# TODO : .close() should close just the client end of the socketpair in Channel. Tunnel/client should detect when the socket has been closed in each
 import argparse
 import enum
 import logging
@@ -16,6 +15,20 @@ import threading
 def counter(start=1, end=0xffffffff):
     for i in range(start, end):
         yield i
+
+
+def human(size):
+    """
+    :param int size: The integer to represent as human-readable bytes
+    :return: A human-readable-string representation of the argument
+    :rtype: str
+    """
+    suffixes = ['B', 'K', 'M', 'G', 'T', 'P']
+    for i in range(len(suffixes)):
+        if size < 1024:
+            return '{}{}'.format(size, suffixes[i])
+        size //= 1024
+    return '{}{}'.format(size * 1024, suffixes[-1])
 
 
 class MessageType(enum.Enum):
@@ -136,7 +149,7 @@ class Channel(object):
         self.rx = 0
 
     def __repr__(self):
-        return '<Channel id={} bytes_tx={} bytes_rx={}>'.format(self.channel_id, self.tx, self.rx)
+        return '<Channel id={} bytes_tx={} bytes_rx={}>'.format(self.channel_id, human(self.tx), human(self.rx))
 
     @property
     def tunnel_interface(self):
@@ -150,11 +163,10 @@ class Channel(object):
     @property
     def client_interface(self):
         """
-        You can assume this supports the socket.socket stream interface
-        :return: something for client software to interface with
+        You can assume this supports the socket.socket stream interface.
+        :return: something for the client software to interact with
         :rtype: socket.socket
         """
-        # TODO : deprecate this
         return self._client_end
 
     @property
@@ -176,9 +188,21 @@ class Channel(object):
         """
         Closes the Channel
         """
-        # TODO : close Channel._client_end. Tunnel should use Channel.tunnel_interface.close
-        self._tunnel_end.close()
         self._client_end.close()
+
+    def sendall(self, data, flags=0):
+        """
+        Send all the data
+        :param data: The data to send
+        :param flags: Flags passed through to socket
+        :return: The number of bytes sent (should match length of data)
+        :rtype: int
+        """
+        sent = 0
+        while sent < len(data):
+            _sent = self._client_end.send(data[sent:], flags)
+            sent += _sent
+        return sent
 
     def send(self, data, flags=0):
         """
@@ -187,13 +211,8 @@ class Channel(object):
         :param int flags: Flags that are passed through to the underlying socket
         :raises BrokenPipeError: If the socket is no longer connected
         """
-        # TODO : allow BrokenPipeError to pass through
-        try:
-            self.client_interface.sendall(data, flags)
-        except BrokenPipeError as e:
-            self.logger.debug('Error sending through channel: {}'.format(e))
-        else:
-            self.tx += len(data)
+        self._client_end.sendall(data, flags)
+        self.tx += len(data)
 
     def recv(self, length):
         """
@@ -203,9 +222,8 @@ class Channel(object):
         :rtype: bytes
         :raises EOFError: When the remote endpoint is closed
         """
-        # TODO : check for 0 bytes received and raise EOFError
         try:
-            data = self.client_interface.recv(length)
+            data = self._client_end.recv(length)
         except Exception as e:
             self.logger.debug('Error sending through channel: {}'.format(e))
             data = b''
@@ -253,8 +271,8 @@ class Tunnel(object):
         return msg.format(
             len(self.channels),
             len(self.closed_channels),
-            sum([c.tx for c, _ in self.channels] + [c.tx for _, c in self.closed_channels.items()]),
-            sum([c.rx for c, _ in self.channels] + [c.rx for _, c in self.closed_channels.items()]),
+            human(sum([c.tx for c, _ in self.channels] + [c.tx for _, c in self.closed_channels.items()])),
+            human(sum([c.rx for c, _ in self.channels] + [c.rx for _, c in self.closed_channels.items()])),
         )
 
     def sigquit_handler(self, signum, frame):
@@ -321,11 +339,9 @@ class Tunnel(object):
                 self.logger.debug('Attempted to close channel that is not open : {}'.format(channel_id))
                 return
         channel = self.id_channel_map[channel_id]
+        self.channels.remove((channel, channel_id))
         channel.close()
-        try:
-            self.channels.remove((channel, channel_id))
-        except ValueError:
-            self.logger.debug('Attempted to remove a channel not in the channel list')
+        channel.tunnel_interface.close()
         if close_remote:
             self._close_channel_remote(channel_id)
         self.close_channel_callback(channel)
@@ -425,7 +441,7 @@ class Tunnel(object):
             if not r:
                 continue
 
-            # If tunnel is ready, read all messages and send to appropriate channels
+            # If tunnel is ready, read a message and send to appropriate channels
             if self.transport in r:
                 # Receive a message
                 try:
@@ -440,9 +456,11 @@ class Tunnel(object):
                 if message.msg_type == MessageType.CloseChannel:
                     self.close_channel(message.channel_id)
                     ignored_channels.append(message.channel_id)
+
                 # Check if it's a ChannelOpen message
                 elif message.msg_type == MessageType.OpenChannel:
                     self.open_channel(message.channel_id)
+
                 # Check if it's a Data message
                 elif message.msg_type == MessageType.Data:
                     channel = self.id_channel_map.get(message.channel_id)
@@ -450,40 +468,49 @@ class Tunnel(object):
                         self.logger.debug('Received a message for an unknown channel, closing remote')
                         self.close_channel(message.channel_id, close_remote=True)
                     else:
-                        channel.tunnel_interface.sendall(message.body)
+                        try:
+                            channel.tunnel_interface.sendall(message.body)
+                        except OSError as e:
+                            self.logger.debug('Error sending to transport, closing channel {} ({})'.format(channel, e))
+                            self.close_channel(channel_id=message.channel_id, close_remote=True)
+
                 # Not implemented channel type
                 else:
                     self.logger.warn('Non-implemented MessageType received: {}'.format(message.msg_type))
 
             # If channels ready, then read data, encapsulate in Message, and send over transport
-            for tunnel_iface in r:
-                if tunnel_iface == self.transport:
-                    continue  # This was already handle above
+            else:
                 tiface_channel_map = {channel.tunnel_interface: channel for (channel, channel_id) in self.channels}
-                channel = tiface_channel_map.get(tunnel_iface)
-                if channel is None or channel.channel_id in ignored_channels:
-                    continue  # Channel was closed or does not exist
-                try:
-                    data = tunnel_iface.recv(4096)
-                except Exception as e:
-                    self.logger.debug('Error encountered while receiving from {}: {}'.format(channel, e))
-                    self.close_channel(channel.channel_id, close_remote=True)
-                    continue
-                if not data:
-                    self.logger.debug('Received EOF from {}, closing channel remotely'.format(channel))
-                    self.close_channel(channel.channel_id, close_remote=True)
-                    continue
 
-                message = Message(data, channel.channel_id, MessageType.Data)
+                for tunnel_iface in r:
+                    if tunnel_iface == self.transport:
+                        continue  # We already did transport work in the previous block
 
-                try:
-                    self.transport_lock.acquire()
-                    self.transport.sendall(message.serialize())
-                    self.transport_lock.release()
-                except:
-                    self.logger.critical('Problem sending data over transport, tearing it down!')
-                    os.kill(os.getpid(), signal.SIGINT)
-                    return
+                    channel = tiface_channel_map.get(tunnel_iface)
+                    if channel is None or channel.channel_id in ignored_channels:
+                        continue  # Channel was closed or does not exist
+
+                    try:
+                        data = tunnel_iface.recv(4096)
+                    except Exception as e:
+                        self.logger.debug('Error encountered while receiving from {}: {}'.format(channel, e))
+                        self.close_channel(channel.channel_id, close_remote=True)
+                        continue
+                    if not data:
+                        self.logger.debug('Received EOF from {}, closing channel remotely'.format(channel))
+                        self.close_channel(channel.channel_id, close_remote=True)
+                        continue
+
+                    message = Message(data, channel.channel_id, MessageType.Data)
+
+                    try:
+                        self.transport_lock.acquire()
+                        self.transport.sendall(message.serialize())
+                        self.transport_lock.release()
+                    except:
+                        self.logger.critical('Problem sending data over transport, tearing it down!')
+                        os.kill(os.getpid(), signal.SIGINT)
+                        return
         return
 
     def proxy_sock_channel(self, sock, channel, logger):
@@ -523,7 +550,7 @@ class Tunnel(object):
                 try:
                     data = channel.recv(4096)
                 except Exception as e:
-                    logger.error('Error receiving data from channel: {}'.format(e))
+                    logger.debug('Error receiving data from channel: {}'.format(e))
                     close_both()
                     return
                 else:
@@ -535,7 +562,7 @@ class Tunnel(object):
                 try:
                     sock.sendall(data)
                 except Exception as e:
-                    logger.error('Error encountered while sending data to remote socket: {}'.format(e))
+                    logger.debug('Error encountered while sending data to remote socket: {}'.format(e))
                     close_both()
                     return
 
@@ -556,7 +583,7 @@ class Tunnel(object):
                 try:
                     channel.send(data)
                 except Exception as e:
-                    logger.error('Error sending to channel: {}'.format(e))
+                    logger.debug('Error sending to channel: {}'.format(e))
                     close_both()
                     return
 
@@ -724,8 +751,8 @@ class Socks5Proxy(object):
         # Connect to the remote endpoint
         addr = addr.decode()
         host = (addr, port)
-        sock = cls._remote_connect(addr, port, sock, af=addr_type)
-        return sock, host
+        remote_sock = cls._remote_connect(addr, port, sock, af=addr_type)
+        return remote_sock, host
 
 
 class Relay(object):
