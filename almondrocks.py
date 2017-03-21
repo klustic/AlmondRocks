@@ -190,20 +190,6 @@ class Channel(object):
         """
         self._client_end.close()
 
-    def sendall(self, data, flags=0):
-        """
-        Send all the data
-        :param data: The data to send
-        :param flags: Flags passed through to socket
-        :return: The number of bytes sent (should match length of data)
-        :rtype: int
-        """
-        sent = 0
-        while sent < len(data):
-            _sent = self._client_end.send(data[sent:], flags)
-            sent += _sent
-        return sent
-
     def send(self, data, flags=0):
         """
         Send data associated with this Channel across the Tunnel
@@ -448,6 +434,7 @@ class Tunnel(object):
                     message = self.recv_message()
                 except ValueError as e:
                     self.logger.critical('Error encountered while reading from transport: {}'.format(e))
+                    os.kill(os.getpid(), signal.SIGINT)  # Trigger tunnel teardown
                     sys.exit(1)
 
                 self.logger.debug('Received a message: {}'.format(message))
@@ -749,7 +736,8 @@ class Socks5Proxy(object):
             raise ValueError('Received unknown address type')
 
         # Connect to the remote endpoint
-        addr = addr.decode()
+        if isinstance(addr, bytes):
+            addr = addr.decode()
         host = (addr, port)
         remote_sock = cls._remote_connect(addr, port, sock, af=addr_type)
         return remote_sock, host
