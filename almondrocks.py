@@ -723,7 +723,7 @@ class Socks5Proxy(object):
         elif atyp == 3:  # Domain name, will be resolved by socket.connect API
             addr_type = socket.AF_INET
             length, = struct.unpack('B', request_data[4:5])
-            addr = request_data[5:5 + length]
+            addr = request_data[5:5 + length].decode()
             port, = struct.unpack('!H', request_data[length + 5:length + 5 + 2])
         elif atyp == 4:  # IPv6
             addr_type = socket.AF_INET6
@@ -736,8 +736,6 @@ class Socks5Proxy(object):
             raise ValueError('Received unknown address type')
 
         # Connect to the remote endpoint
-        if isinstance(addr, bytes):
-            addr = addr.decode()
         host = (addr, port)
         remote_sock = cls._remote_connect(addr, port, sock, af=addr_type)
         return remote_sock, host
