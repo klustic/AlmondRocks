@@ -263,7 +263,71 @@ class Tunnel(object):
 
     def sigquit_handler(self, signum, frame):
         self.logger.debug('Caught SIGQUIT (if you want to exit, use CTRL-C!!)')
-        print(self)
+
+        def print_options():
+            print('')
+            print('.: AROX Options :.')
+            print('?...:  Show this menu')
+            print('s...:  Show Tunnel statistics')
+            print('k...:  Kill a Channel')
+            print('V...:  Increase logging verbosity')
+            print('v...:  Decrease logging verbosity')
+            print('')
+            return
+
+        def print_stats():
+            print('')
+            print('################################# Stats For Nerds #################################')
+            print(self)
+            for channel, _ in self.channels:
+                print('`-> {}'.format(channel))
+            print('###################################################################################')
+            print('')
+            return
+
+        def kill_channel():
+            print('')
+            try:
+                cid = int(input('ChannelID? '))
+                self.close_channel(cid, close_remote=True, exc=True)
+            except:
+                print('ERROR: illegal channel provided')
+            print('')
+            return
+
+        choice = input('AROX> ').strip()
+        if choice == '?' or choice == 'h':
+            print_options()
+        elif choice == 's':
+            print_stats()
+        elif choice == 'k':
+            kill_channel()
+        elif choice == 'v':
+            level = logging.getLogger().getEffectiveLevel()
+            if level == logging.ERROR:
+                level = logging.CRITICAL
+            elif level == logging.WARNING:
+                level = logging.ERROR
+            elif level == logging.INFO:
+                level = logging.WARNING
+            elif level == logging.DEBUG:
+                level = logging.INFO
+            print('[+] Logging level decreased to {}'.format(logging._levelToName[level]))
+            logging.getLogger().setLevel(level)
+        elif choice == 'V':
+            level = logging.getLogger().getEffectiveLevel()
+            if level == logging.CRITICAL:
+                level = logging.ERROR
+            elif level == logging.ERROR:
+                level = logging.WARNING
+            elif level == logging.WARNING:
+                level = logging.INFO
+            elif level == logging.INFO:
+                level = logging.DEBUG
+            print('[+] Logging level increased to {}'.format(logging._levelToName[level]))
+            logging.getLogger().setLevel(level)
+        else:
+            print('\nIllegal option "{}"\n'.format(choice))
         return
 
     def sigint_handler(self, signum, frame):
