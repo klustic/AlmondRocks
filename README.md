@@ -38,6 +38,17 @@ $ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -nodes
 ## Running *AlmondRocks*
 You can either run in *server* or *relay* mode. Each has its own options, which you can see by specifying the mode and **-h**.
 
+When using default ports on the *server*, the *relay* should connect to port 4433, and SOCKS clients should use port 1080.
+So an example proxychains configuration file located on the server would contain:
+
+**/etc/procychains.conf**
+```
+...
+[ProxyList]
+socks5 127.0.0.1 1080
+...
+```
+
 ### SSL mode (default)
 On the server:
 ```

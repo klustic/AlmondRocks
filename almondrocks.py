@@ -285,7 +285,13 @@ class Tunnel(object):
             print('')
             return
 
-        def kill_channel():
+        choice = input('AROX> ').strip()
+
+        if choice == '?' or choice == 'h':
+            print_options()
+        elif choice == 's':
+            print_stats()
+        elif choice == 'k':
             print('')
             try:
                 cid = int(input('ChannelID? '))
@@ -293,15 +299,6 @@ class Tunnel(object):
             except:
                 print('ERROR: illegal channel provided')
             print('')
-            return
-
-        choice = input('AROX> ').strip()
-        if choice == '?' or choice == 'h':
-            print_options()
-        elif choice == 's':
-            print_stats()
-        elif choice == 'k':
-            kill_channel()
         elif choice == 'v':
             level = logging.getLogger().getEffectiveLevel()
             if level == logging.ERROR:
@@ -312,7 +309,7 @@ class Tunnel(object):
                 level = logging.WARNING
             elif level == logging.DEBUG:
                 level = logging.INFO
-            print('[+] Logging level decreased to {}'.format(logging._levelToName[level]))
+            print('[+] Logging verbosity decreased to {}'.format(logging._levelToName[level]))
             logging.getLogger().setLevel(level)
         elif choice == 'V':
             level = logging.getLogger().getEffectiveLevel()
@@ -324,7 +321,7 @@ class Tunnel(object):
                 level = logging.INFO
             elif level == logging.INFO:
                 level = logging.DEBUG
-            print('[+] Logging level increased to {}'.format(logging._levelToName[level]))
+            print('[+] Logging verbosity increased to {}'.format(logging._levelToName[level]))
             logging.getLogger().setLevel(level)
         else:
             print('\nIllegal option "{}"\n'.format(choice))
