@@ -4,6 +4,7 @@ import enum
 import logging
 import os
 import select
+import shlex
 import signal
 import socket
 import ssl
@@ -265,7 +266,6 @@ class Tunnel(object):
         self.logger.debug('Caught SIGQUIT (if you want to exit, use CTRL-C!!)')
 
         def print_options():
-            print('')
             print('.: AROX Options :.')
             print('?...:  Show this menu')
             print('s...:  Show Tunnel statistics')
@@ -276,7 +276,6 @@ class Tunnel(object):
             return
 
         def print_stats():
-            print('')
             print('################################# Stats For Nerds #################################')
             print(self)
             for channel, _ in self.channels:
@@ -285,14 +284,21 @@ class Tunnel(object):
             print('')
             return
 
-        choice = input('AROX> ').strip()
+        try:
+            choice = input('AROX> ').strip()
+        except EOFError:
+            print('')
+            self.logger.warn('Unable to use the AROX commandline (did you pipe args in on stdin?) Here are some stats.')
+            print_stats()
+            return
+        else:
+            print('')
 
         if choice == '?' or choice == 'h':
             print_options()
         elif choice == 's':
             print_stats()
         elif choice == 'k':
-            print('')
             try:
                 cid = int(input('ChannelID? '))
                 self.close_channel(cid, close_remote=True, exc=True)
@@ -891,25 +897,9 @@ def server_main(args):
 def relay_main(args):
     """
     Target functionality for Relay mode.
-
-    The connect-back string can also be piped into the script via stdin when the script is run.
     """
-    if args.connect is None:
-        logging.debug('Connect string not provided on command-line, checking stdin...')
-        r, _, _ = select.select([sys.stdin], [], [], 0)
-        if sys.stdin not in r:
-            logging.critical('Connect string not provided as argument or echoed in, exiting!')
-            sys.exit(-1)
-        args.connect = sys.stdin.read(256)
-
-    if ':' not in args.connect:
-        logging.critical('Make sure you specified your server in the HOST:PORT format')
-        sys.exit(1)
-
     host, port = args.connect.split(':')
-    port = int(port)
-
-    relay = Relay(host, port, no_ssl=args.no_ssl)
+    relay = Relay(host, int(port), no_ssl=args.no_ssl)
     relay.run()
     return
 
@@ -935,14 +925,25 @@ def main():
     relay_parser = subparsers.add_parser('relay', description='Options for running in Relay mode')
     relay_parser.add_argument('-d', '--debug', default=False, action='store_true', help='Enable debug mode')
     relay_parser.add_argument('-v', '--verbose', default=False, action='store_true', help='Enable verbose mode')
-    relay_parser.add_argument('--connect', default=None, help='The socksychains server to connect to (i.e. host:port). '
-                                                              'Alternatively, this can be piped in at runtime.')
+    relay_parser.add_argument('--connect', default=None, required=True,
+                              help='The socksychains server to connect to (i.e. host:port).')
     relay_parser.add_argument('--no-ssl', dest='no_ssl', default=False, action='store_true',
                               help='Disable SSL on tunnel to the server')
     relay_parser.set_defaults(main_function=relay_main)
 
-    # Parse the arguments
-    args = parser.parse_args()
+    # Parse the arguments. There's also a hack to provide the ability to send cmdline arguments on stdin at startup
+    if len(sys.argv) == 1:
+        sys.stderr.write('[-] Checking for options on stdin...\n')
+        r, _, _ = select.select([sys.stdin], [], [], 0)
+        if not r:
+            sys.stderr.write('[!] Options not detected on stdin, bailing!\n')
+            sys.exit(-1)
+        else:
+            cmdline = sys.stdin.read(4096)
+            sys.stderr.write('[+] Options received\n')
+        args = parser.parse_args(shlex.split(cmdline))
+    else:
+        args = parser.parse_args()
 
     # Set logging level
     log_level = logging.WARNING
