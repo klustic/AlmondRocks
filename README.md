@@ -2,9 +2,7 @@
 
 A tunneling tool for connecting out past a NAT device and extending an SSL-encrypted SOCKS proxy inward.
 
-In the following example, the workstation on the left is able to proxy traffic using the SOCKSv5 proxy 127.0.0.1:1080 into the firewalled network on the right:
-
-![almondrocks](.files/almondrocks.png)
+DISCLAIMER: This tool is currently in BETA
 
 ## But y tho?
 We ran into a couple of cases where we needed a tool like this:
@@ -37,9 +35,12 @@ $ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -nodes
 
 ## Running *AlmondRocks*
 You can either run in *server* or *relay* mode. Each has its own options, which you can see by specifying the mode and **-h**.
+- Server mode: Run on machine with connectivity to Internet. Listens for relays, and for SOCKS clients.
+- Relay mode: Run on host in destination network. Calls out to the AlmondRocks server.
 
-When using default ports on the *server*, the *relay* should connect to port 4433, and SOCKS clients should use port 1080.
-So an example proxychains configuration file located on the server would contain:
+When using default ports on the *server*, the *relay* should connect to public.IP.of.server:4433 and SOCKS clients on the server should connect to 127.0.0.1:1080.
+
+An example proxychains configuration file located on the server would contain:
 
 **/etc/procychains.conf**
 ```
@@ -58,7 +59,7 @@ On the relay:
 ```
 $ ./almondrocks.py relay --connect 1.2.3.4:4433
   -- or --
-$ echo 1.2.3.4:4433 | ./almondrocks.py relay
+$ echo relay --connect 1.2.3.4:4433 | ./almondrocks.py
 ```
 
 ### Non-SSL mode (not recommended)
@@ -70,27 +71,45 @@ On the relay:
 ```
 $ ./almondrocks.py relay --connect 1.2.3.4:4433 --no-ssl
   -- or --
-$ echo 1.2.3.4:4433 | ./almondrocks.py relay --no-ssl
+$ echo relay --no-ssl --connect 1.2.3.4:4433 | ./almondrocks.py
 ```
 
-## Architecture
-### Tunnel
-The tunnel is the primary transport that multiplexes channels and provides network connectivity.
+## Other features
+### AROX Prompt
+You can type CTRL-\ to reach an internal prompt. The following options are supported:
+```
+AROX> ?
 
-### Channels
-Channels are client software's interface to the **Tunnel**. To send data across a tunnel, instantiate a channel associated with your tunnel (with `Tunnel.open_channel`) and use it as you would a socket.
+.: AROX Options :.
+?...:  Show this menu
+s...:  Show Tunnel statistics
+k...:  Kill a Channel
+V...:  Increase logging verbosity
+v...:  Decrease logging verbosity
+```
 
-Under the hood, a channel is a glorified TCP socket pair; the tunnel uses one end, and you use the other.
+The logging options allow you to increase and decrease verbosity without restarting the tunnel. This is helpful for debugging, or for limiting the amount of output printed to the terminal.
+```
+AROX> V
 
-### Messages
-Messages are the **Tunnel**'s mechanism for encapsulating channel data and tunnel control primitives. Everything sent across the tunnel is sent as a message.
+[+] Logging verbosity increased to INFO
+[2017-04-09 17:33:37]     INFO server: Terminating thread that handled <Channel id=79 bytes_tx=820B bytes_rx=62K> <--> 127.0.0.1:53848
+[2017-04-09 17:33:37]     INFO server: Terminating thread that handled <Channel id=80 bytes_tx=719B bytes_rx=102K> <--> 127.0.0.1:53850
+[2017-04-09 17:33:39]     INFO server: Accepted SOCKS client connection from 127.0.0.1:53858
+```
 
-### Server
-A server accepts a tunnel connection from a **Relay**. Once the relay connects, the server starts accepting connections from SOCKSv5 clients.
+The statistics view shows statistics for the tunnel and each active channel; each channel represents a connection made by a SOCKS client. The kill option allows you to close individual channels.
+```
+AROX> s
 
-When a SOCKS client connects, the Server creates a new channel and proxies data between the SOCKS client and the channel.
+################################# Stats For Nerds #################################
+<Tunnel OpenChannels=2 ClosedChannels=96 BytesTX=1M BytesRX=33M>
+`-> <Channel id=76 bytes_tx=2K bytes_rx=2K>
+`-> <Channel id=82 bytes_tx=1K bytes_rx=2K>
+###################################################################################
 
-### Relay
-A relay connects a tunnel back to a **Server**. When the server opens a new channel, the relay receives data for that channel, and connects to a remote endpoint if a valid SOCKSv5 CONNECT message is received.
+AROX> k
 
-Once connected, the relay proxies data between the channel and remote endpoint for the life of the channel.
+ChannelID? 82
+[2017-04-09 17:40:31]     INFO server: Terminating thread that handled <Channel id=82 bytes_tx=1K bytes_rx=2K> <--> 127.0.0.1:53854
+```
