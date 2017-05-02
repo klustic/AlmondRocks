@@ -113,3 +113,38 @@ AROX> k
 ChannelID? 82
 [2017-04-09 17:40:31]     INFO server: Terminating thread that handled <Channel id=82 bytes_tx=1K bytes_rx=2K> <--> 127.0.0.1:53854
 ```
+
+## Example Usage
+
+### Name resolution
+Situations often arise when you need to resolve names inside a network. This can be done through the SOCKS tunnel with the proxyresolve utility that comes with proxychains, assuming you know the IP address of the internal DNS server:
+
+```
+PROXYRESOLV_DNS=<internal DNS server IP> /usr/lib/proxychains3/proxyresolv <domain to resolve>
+```
+
+### Proxychains + Nmap
+Ensure ProxyChains is using socks5 and set to connect to 127.0.0.1:1080.
+
+**/etc/procychains.conf**
+```
+...
+[ProxyList]
+socks5 127.0.0.1 1080
+...
+```
+
+Nmap options are limited through a SOCKS proxy, mostly due to limitations in the SOCKS protocol. Therefore you have to use -sT type scans; the default scan type (SYN scan) will fail:
+
+```
+nmap -n -Pn -sT <target>
+nmap -n -Pn -sT <target> -p <port1[, port2[, ...]]>
+nmap -n -Pn -sT <target> --top-ports 25
+```
+
+### Curl
+Curl natively supports SOCKSv5 proxies:
+
+```
+curl --socks5-hostname 127.0.0.1:1080 https://www.google.com
+```
