@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+"""
+NOTE: This is a Relay-only version designed to be run from the command line. Before using it, be sure to update
+      the connect-back string below.
+"""
 from __future__ import unicode_literals, division
 
 import select
@@ -7,6 +11,9 @@ import ssl
 import struct
 import sys
 import threading
+
+CONNECT_STRING = '127.0.0.1:4433'
+DISABLE_SSL = False
 
 
 class MessageType(object):
@@ -121,11 +128,17 @@ class Tunnel(object):
 
     @property
     def channel_id_map(self):
-        return {x: y for x, y in self.channels}
+        retval = {}
+        for x, y in self.channels:
+            retval[x] = y
+        return retval
 
     @property
     def id_channel_map(self):
-        return {y: x for x, y in self.channels}
+        retval = {}
+        for x, y in self.channels:
+            retval[y] = x
+        return retval
 
     def _close_channel_remote(self, channel_id):
         message = Message(b'', channel_id, msg_type=MessageType.CloseChannel)
@@ -241,7 +254,9 @@ class Tunnel(object):
                             self.close_channel(channel_id=message.channel_id, close_remote=True)
 
             else:
-                tiface_channel_map = {channel.tunnel_interface: channel for (channel, channel_id) in self.channels}
+                tiface_channel_map = {}
+                for (channel, channel_id) in self.channels:
+                    tiface_channel_map[channel.tunnel_interface] = channel
 
                 for tunnel_iface in r:
                     if tunnel_iface == self.transport:
@@ -268,7 +283,6 @@ class Tunnel(object):
                         self.transport_lock.release()
                     except:
                         return
-        return
 
     def proxy_sock_channel(self, sock, channel, logger):
 
@@ -434,8 +448,6 @@ class Relay(object):
         self.tunnel.wait()
 
 
-host, port = "127.0.0.1:4433".split(':')
-port = int(port)
-no_ssl = False
-relay = Relay(host, port, no_ssl=no_ssl)
+host, port = CONNECT_STRING.split(':')
+relay = Relay(host, int(port), no_ssl=DISABLE_SSL)
 relay.run()
