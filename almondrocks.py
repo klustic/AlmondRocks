@@ -655,10 +655,15 @@ class Server(object):
         self.logger = logging.getLogger('server')
 
         # Create the tunnel server
-        self.tunnel_port = tunnel_port
+        if ':' in tunnel_port:
+            host, port = tunnel_port.split(':')
+        else:
+            host, port = '0.0.0.0', port
+        self.tunnel_port = int(port)
+        self.tunnel_host = host
         self.tunnel_server = socket.socket()
         self.tunnel_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.tunnel_server.bind(('', tunnel_port))
+        self.tunnel_server.bind((self.tunnel_host, self.tunnel_port))
         self.tunnel_server.listen(1)
 
         # Create the SOCKS server
@@ -710,7 +715,7 @@ class Server(object):
         Waits for Relay to connect, then handles SOCKS clients as they connect. A thread is spawned to handle each
         SOCKS client.
         """
-        self.logger.info('Listening for relay connections on {}:{}'.format('0.0.0.0', self.tunnel_port))
+        self.logger.info('Listening for relay connections on {}:{}'.format(self.tunnel_host, self.tunnel_port))
         client, addr = self.tunnel_server.accept()
         self.logger.info('Accepted relay client connection from: {}:{}'.format(*addr))
         self.tunnel = Tunnel(client)
@@ -915,7 +920,7 @@ def main():
     server_parser.add_argument('-v', '--verbose', default=False, action='store_true', help='Enable verbose mode')
     server_parser.add_argument('-s', '--socks-port', type=int, default=1080,
                                help='The port to bind for the SOCKS server')
-    server_parser.add_argument('-t', '--tunnel-port', type=int, default=4433,
+    server_parser.add_argument('-t', '--tunnel-port', default='4433',
                                help='The port to bind for the tunnel callback')
     server_parser.add_argument('--cert', default=None, help='The path to the SSL certificate file')
     server_parser.add_argument('--key', default=None, help='The path to the SSL key file')
