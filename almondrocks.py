@@ -658,7 +658,7 @@ class Server(object):
         if ':' in tunnel_port:
             host, port = tunnel_port.split(':')
         else:
-            host, port = '0.0.0.0', port
+            host, port = '0.0.0.0', tunnel_port
         self.tunnel_port = int(port)
         self.tunnel_host = host
         self.tunnel_server = socket.socket()
