@@ -184,7 +184,7 @@ class SocksHandler(object):
                 if atyp == 0x01:  # IPv4
                     if len(data) != 10:
                         return struct.pack('!BBBBIH', 0x05, 0x01, 0x00, 0x01, 0, 0)  # General SOCKS failure
-                    host = socket.inet_ntop(socket.AF_INET, data[5:9])
+                    host = socket.inet_ntop(socket.AF_INET, data[4:8])
                     port, = struct.unpack('!H', data[-2:])
                     af = socket.AF_INET
                 elif atyp == 0x03:  # FQDN
