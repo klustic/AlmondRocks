@@ -1,150 +1,94 @@
 # AlmondRocks
+AlmondRocks ("arox") is a tunneling tool that connects out from a target network and provides a (limited) SOCKSv5 interface. The tunnel connection is currently a binary protocol under TLS.
 
-A tunneling tool for connecting out past a NAT device and extending an SSL-encrypted SOCKS proxy inward.
+This tool is currently in BETA. The biggest known issue at the moment is lack of tunnel peer authentication.
 
-DISCLAIMER: This tool is currently in BETA
+## Requirements
+- Python 2.7
 
-## But y tho?
-We ran into a couple of cases where we needed a tool like this:
+## Components
 
-*There are tons of SOCKS proxies out there*
+### Server
+The `server` receives tunnel connections and opens a SOCKS proxy port.
 
-I wasn't able to find an implementation that allows the SOCKS server and exit nodes to
-- exist on separate hosts, and
-- multiplex all connections through one TCP session.
+### Relay
+The `relay` connects out from target to a `server`. All subsequent traffic proxied through the SOCKS port on the server will be tunneled through the target.
 
-*Why not just use SSH?*
+## Usage
 
-In order to achieve this same goal with SSH you could create a reverse proxy pointing to localhost SSH and then SSH with dynamic forwarding to the internal host, but that would require logging in to the system, which would create logs that a low user couldn't clean. Assuming SSH is even running on that server in the first place...
+### Server
 
-*Why Python? This could be way faster in C!*
+Generate TLS certificate and private key. WARNING: You should use something like LetsEncrypt for this!!
 
-Portability is a huge reason. And since most of this stuff is backended by socket/select/pthread, it's already optimized in cpython :) Besides, in my testing, this wasn't exactly slow:
-
-![speedtest](.files/speedtest.png)
-
-## Setup
-*AlmondRocks* is written in standard Python (does not require any third-party packages).
-
-If you're using SSL, then on the server create a key and certificate. To create a signed certificate, you should use a service like [Let's Encrypt](https://letsencrypt.org/getting-started/).
-
-However, you can also use self-signed certs:
 ```
-$ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -nodes
+self-signed certs and keys:
+
+$ bash bin/cert.sh
+$ ls -l ssl
 ```
 
-## Running *AlmondRocks*
-You can either run in *server* or *relay* mode. Each has its own options, which you can see by specifying the mode and **-h**.
-- Server mode: Run on machine with connectivity to Internet. Listens for relays, and for SOCKS clients.
-- Relay mode: Run on host in destination network. Calls out to the AlmondRocks server.
+The `-h` flag shows a help menu. Listen on 443/tcp for tunnel connections, and listen on 1080/tcp for SOCKS clients:
 
-When using default ports on the *server*, the *relay* should connect to public.IP.of.server:4433 and SOCKS clients on the server should connect to 127.0.0.1:1080.
+```
+python arox.py -v server --tunnel-addr 0.0.0.0:443 --socks-addr 127.0.0.1:1080
+```
 
-An example proxychains configuration file located on the server would contain:
+### Relay (standalone)
 
-**/etc/procychains.conf**
+The `-h` flag shows a help menu. Connect to master at 10.0.0.10:443:
+
+```
+python arox.py -v relay --tunnel-addr 10.0.0.10:443
+```
+
+### Relay (Empire)
+
+
+```
+TODO
+```
+
+### Advanced
+
+In some cases you may want to hide commandline options in the process list. AROX supports passing arguments via stdin on the command line:
+
+```
+echo -v relay --tunnel-addr 10.0.0.10:443 | python arox.py
+```
+
+Looks like this in the process list:
+
+```
+[root@testing-c67 arox]# echo -v relay --tunnel-addr 10.0.0.10:443 | python2.7 arox.py
+[-] Checking for options on stdin...
+[+] Options received
+[2018-05-15 14:39:36]     INFO SocksRelay: Connected to 10.0.0.10:443
+...
+[root@testing-c67 arox]# bg
+[root@testing-c67 arox]# ps -ef --forest
+...
+root       1585   1584  0 14:04 pts/0    00:00:00                  \_ /bin/bash
+root       1676   1585  0 14:39 pts/0    00:00:00                      \_ python2.7 arox.py
+root       1677   1585  0 14:39 pts/0    00:00:00                      \_ ps -ef --forest
+```
+
+## Open connections
+
+There is an easter egg that lists all connections that are opened via arox tunnel. Press `CTRL-\` on the arox server terminal to view statistics.
+
+WARNING: test this locally first, as it relies on passing SIGQUIT to the process
+
 ```
 ...
-[ProxyList]
-socks5 127.0.0.1 1080
+[2018-05-15 19:43:34]     INFO Tunnel: Closed channel: <Channel id=304960167 remote_addr=www.pandora.com[208.85.40.50]:443 local_addr=127.0.0.1:56896>
+[2018-05-15 19:43:34]     INFO Tunnel: Closed channel: <Channel id=304960168 remote_addr=www.pandora.com[208.85.40.20]:443 local_addr=127.0.0.1:56898>
+^\[2018-05-15 19:43:42]  WARNING SocksServer:
+[2018-05-15 19:43:42]  WARNING SocksServer: ~~~ Stats for nerds : 5 open channels, tunnel peer is 10.0.0.11:60814 ~~~
+[2018-05-15 19:43:42]  WARNING SocksServer:   <Channel id=304960141 remote_addr=www.pandora.com[208.85.40.20]:443 local_addr=127.0.0.1:56844>
+[2018-05-15 19:43:42]  WARNING SocksServer:   <Channel id=304960142 remote_addr=lt500.tritondigital.com[54.243.169.218]:443 local_addr=127.0.0.1:56846>
+[2018-05-15 19:43:42]  WARNING SocksServer:   <Channel id=304960143 remote_addr=stats.pandora.com[208.85.40.147]:443 local_addr=127.0.0.1:56848>
+[2018-05-15 19:43:42]  WARNING SocksServer:   <Channel id=304960145 remote_addr=adserver.pandora.com[208.85.40.115]:443 local_addr=127.0.0.1:56852>
+[2018-05-15 19:43:42]  WARNING SocksServer:   <Channel id=304960146 remote_addr=adserver.pandora.com[208.85.40.115]:443 local_addr=127.0.0.1:56854>
+[2018-05-15 19:43:42]  WARNING SocksServer: ~~~ End of Stats ~~~
 ...
-```
-
-### SSL mode (default)
-On the server:
-```
-$ ./almondrocks.py server --cert cert.pem --key key.pem
-```
-On the relay:
-```
-$ ./almondrocks.py relay --connect 1.2.3.4:4433
-  -- or --
-$ echo relay --connect 1.2.3.4:4433 | ./almondrocks.py
-```
-
-### Non-SSL mode (not recommended)
-On the server:
-```
-$ ./almondrocks.py server
-```
-On the relay:
-```
-$ ./almondrocks.py relay --connect 1.2.3.4:4433 --no-ssl
-  -- or --
-$ echo relay --no-ssl --connect 1.2.3.4:4433 | ./almondrocks.py
-```
-
-## Other features
-### AROX Prompt
-You can type CTRL-\ to reach an internal prompt. The following options are supported:
-```
-AROX> ?
-
-.: AROX Options :.
-?...:  Show this menu
-s...:  Show Tunnel statistics
-k...:  Kill a Channel
-V...:  Increase logging verbosity
-v...:  Decrease logging verbosity
-```
-
-The logging options allow you to increase and decrease verbosity without restarting the tunnel. This is helpful for debugging, or for limiting the amount of output printed to the terminal.
-```
-AROX> V
-
-[+] Logging verbosity increased to INFO
-[2017-04-09 17:33:37]     INFO server: Terminating thread that handled <Channel id=79 bytes_tx=820B bytes_rx=62K> <--> 127.0.0.1:53848
-[2017-04-09 17:33:37]     INFO server: Terminating thread that handled <Channel id=80 bytes_tx=719B bytes_rx=102K> <--> 127.0.0.1:53850
-[2017-04-09 17:33:39]     INFO server: Accepted SOCKS client connection from 127.0.0.1:53858
-```
-
-The statistics view shows statistics for the tunnel and each active channel; each channel represents a connection made by a SOCKS client. The kill option allows you to close individual channels.
-```
-AROX> s
-
-################################# Stats For Nerds #################################
-<Tunnel OpenChannels=2 ClosedChannels=96 BytesTX=1M BytesRX=33M>
-`-> <Channel id=76 bytes_tx=2K bytes_rx=2K>
-`-> <Channel id=82 bytes_tx=1K bytes_rx=2K>
-###################################################################################
-
-AROX> k
-
-ChannelID? 82
-[2017-04-09 17:40:31]     INFO server: Terminating thread that handled <Channel id=82 bytes_tx=1K bytes_rx=2K> <--> 127.0.0.1:53854
-```
-
-## Example Usage
-
-### Name resolution
-Situations often arise when you need to resolve names inside a network. This can be done through the SOCKS tunnel with the proxyresolve utility that comes with proxychains, assuming you know the IP address of the internal DNS server:
-
-```
-PROXYRESOLV_DNS=<internal DNS server IP> /usr/lib/proxychains3/proxyresolv <domain to resolve>
-```
-
-### Proxychains + Nmap
-Ensure ProxyChains is using socks5 and set to connect to 127.0.0.1:1080.
-
-**/etc/procychains.conf**
-```
-...
-[ProxyList]
-socks5 127.0.0.1 1080
-...
-```
-
-Nmap options are limited through a SOCKS proxy, mostly due to limitations in the SOCKS protocol. Therefore you have to use -sT type scans; the default scan type (SYN scan) will fail:
-
-```
-nmap -n -Pn -sT <target>
-nmap -n -Pn -sT <target> -p <port1[, port2[, ...]]>
-nmap -n -Pn -sT <target> --top-ports 25
-```
-
-### Curl
-Curl natively supports SOCKSv5 proxies:
-
-```
-curl --socks5-hostname 127.0.0.1:1080 https://www.google.com
 ```
