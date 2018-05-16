@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# TODO : Add support for Empire
 import argparse
 import logging
 import random
