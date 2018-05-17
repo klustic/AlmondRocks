@@ -1,5 +1,5 @@
 FROM        python:2.7.15-alpine3.6
-MAINTAINER  "klustic"
+LABEL       maintainer="klustic@gmail.com"
 RUN         apk add --no-cache openssl
 COPY        . /opt/arox/
 WORKDIR     /opt/arox

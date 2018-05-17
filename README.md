@@ -8,32 +8,39 @@ This tool is currently in BETA. The biggest known issue at the moment is lack of
 
 ## Components
 
-### Server
+#### Server
 The `server` receives tunnel connections and opens a SOCKS proxy port.
 
-### Relay
+#### Relay
 The `relay` connects out from target to a `server`. All subsequent traffic proxied through the SOCKS port on the server will be tunneled through the target.
 
 ## Usage
 
-### Server
-
-Generate TLS certificate and private key. WARNING: You should use something like LetsEncrypt for this!!
-
-```
-self-signed certs and keys:
-
-$ bash bin/cert.sh
-$ ls -l ssl
-```
+#### Server (standalone)
 
 The `-h` flag shows a help menu. Listen on 443/tcp for tunnel connections, and listen on 1080/tcp for SOCKS clients:
 
 ```
-python arox.py -v server --tunnel-addr 0.0.0.0:443 --socks-addr 127.0.0.1:1080
+python arox.py -v server --tunnel-addr 0.0.0.0:443 --socks-addr 127.0.0.1:1080 --cert ssl/cert.pem --key ssl/key.pem
 ```
 
-### Relay (standalone)
+#### Server (Docker)
+
+The server is Dockerized for convenience. To use **default certs** (not recommended):
+
+``` bash
+[root]# docker pull klustic/arox:latest
+[root]# docker run --rm -it -p 1080:1080 -p 443:4433 --name arox klustic/arox
+```
+
+To override the default certs, mount a volume from a directory containing `cert.pem` and `key.pem`:
+
+``` bash
+[root]# docker pull klustic/arox:latest
+[root]# docker run --rm -it -p 1080:1080 -p 443:4433 --name arox -v $(pwd)/ssl:/opt/arox/ssl:ro klustic/arox
+```
+
+#### Relay (standalone)
 
 The `-h` flag shows a help menu. Connect to master at 10.0.0.10:443:
 
@@ -41,14 +48,26 @@ The `-h` flag shows a help menu. Connect to master at 10.0.0.10:443:
 python arox.py -v relay --tunnel-addr 10.0.0.10:443
 ```
 
-### Relay (Empire)
+#### Relay (Empire)
 
+First, setup your AROX server (see above). Once you have an Empire agent connected, issues the following commands to Empire:
 
 ```
-TODO
+agents
+interact <sessionId>
+usemodule management/multi/socks
+set server <AROX server IP/domain>:<AROX server port>
+info
+execute
 ```
 
-### Advanced
+NOTE: AROX v1.0.0 broke compatibility with previous versions. The current version is not merged into EmpireProject yet. To use the current version, issue this command before starting Empire:
+
+``` bash
+cp -rv Empire/* /opt/Empire/   ## Or wherever you have installed Empire
+```
+
+## Advanced Usage
 
 In some cases you may want to hide commandline options in the process list. AROX supports passing arguments via stdin on the command line:
 
@@ -72,11 +91,9 @@ root       1676   1585  0 14:39 pts/0    00:00:00                      \_ python
 root       1677   1585  0 14:39 pts/0    00:00:00                      \_ ps -ef --forest
 ```
 
-## Open connections
+## Listing active connections through the AROX tunnel
 
 There is an easter egg that lists all connections that are opened via arox tunnel. Press `CTRL-\` on the arox server terminal to view statistics.
-
-WARNING: test this locally first, as it relies on passing SIGQUIT to the process
 
 ```
 ...
